@@ -7,6 +7,9 @@ import sys
 
 from gevent.libuv import _corecffi # pylint:disable=no-name-in-module,import-error
 
+# Nothing public here
+__all__ = []
+
 ffi = _corecffi.ffi
 libuv = _corecffi.lib
 
@@ -171,7 +174,7 @@ class watcher(_base.watcher):
         # Convert 1/0 to True/False
         if self._watcher is None:
             return None
-        return True if libuv.uv_has_ref(self._watcher) else False
+        return bool(libuv.uv_has_ref(self._watcher))
 
     def _set_ref(self, value):
         if value:

@@ -1,18 +1,23 @@
 # .travis.yml based on https://github.com/DRMacIver/hypothesis/blob/master/.travis.yml
 language: python
-sudo: false
-
+dist: xenial
+group: travis_latest
 python:
   - 3.7-dev
 
 env:
     global:
         - BUILD_RUNTIMES=$HOME/.runtimes
-        - PYTHONHASHSEED=random
+        - PYTHONHASHSEED=8675309
+        - CC="ccache gcc"
+        - CCACHE_NOCPP2=true
+        - CCACHE_SLOPPINESS=file_macro,time_macros,include_file_ctime,include_file_mtime
+        - CCACHE_NOHASHDIR=true
+        - CFLAGS="-g -pipe"
 
     matrix:
       # These are ordered to get as much diversity in the
-      # first group of parallel runs (4) as posible
+      # first group of parallel runs (4) as possible
       - TASK=test-py37
       - TASK=test-py27
       - TASK=test-pypy
@@ -38,7 +43,7 @@ cache:
     - $HOME/.venv
     - $HOME/.runtimes
     - $HOME/.wheelhouse
-
+    - $HOME/.ccache
 
 before_cache:
     - rm -f $HOME/.cache/pip/log/debug.log

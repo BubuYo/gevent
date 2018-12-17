@@ -1,5 +1,6 @@
 from __future__ import absolute_import
 import os
+import sys
 import io
 from io import BufferedReader
 from io import BufferedWriter
@@ -8,6 +9,7 @@ from io import DEFAULT_BUFFER_SIZE
 from io import RawIOBase
 from io import UnsupportedOperation
 
+from gevent._compat import reraise
 from gevent._fileobjectcommon import cancel_wait_ex
 from gevent._fileobjectcommon import FileObjectBase
 from gevent.hub import get_hub
@@ -31,19 +33,37 @@ class GreenFileDescriptorIO(RawIOBase):
 
     def __init__(self, fileno, mode='r', closefd=True):
         RawIOBase.__init__(self) # Python 2: pylint:disable=no-member,non-parent-init-called
+
         self._closefd = closefd
         self._fileno = fileno
         make_nonblocking(fileno)
         readable = 'r' in mode
         writable = 'w' in mode
+
         self.hub = get_hub()
-
         io_watcher = self.hub.loop.io
-        if readable:
-            self._read_event = io_watcher(fileno, 1)
+        try:
+            if readable:
+                self._read_event = io_watcher(fileno, 1)
 
-        if writable:
-            self._write_event = io_watcher(fileno, 2)
+            if writable:
+                self._write_event = io_watcher(fileno, 2)
+        except:
+            # If anything goes wrong, it's important to go ahead and
+            # close these watchers *now*, especially under libuv, so
+            # that they don't get eventually reclaimed by the garbage
+            # collector at some random time, thanks to the C level
+            # slot (even though we don't seem to have any actual references
+            # at the Python level). Previously, if we didn't close now,
+            # that random close in the future would cause issues if we had duplicated
+            # the fileno (if a wrapping with statement had closed an open fileobject,
+            # for example)
+
+            # test__fileobject can show a failure if this doesn't happen
+            # TRAVIS=true GEVENT_LOOP=libuv python -m gevent.tests.test__fileobject \
+            #    TestFileObjectPosix.test_seek TestFileObjectThread.test_bufsize_0
+            self.close()
+            raise
 
     def readable(self):
         return self._read_event is not None
@@ -68,6 +88,17 @@ class GreenFileDescriptorIO(RawIOBase):
     def closed(self):
         return self._closed
 
+    def __destroy_events(self):
+        read_event = self._read_event
+        write_event = self._write_event
+        hub = self.hub
+        self.hub = self._read_event = self._write_event = None
+
+        if read_event is not None:
+            hub.cancel_wait(read_event, cancel_wait_ex, True)
+        if write_event is not None:
+            hub.cancel_wait(write_event, cancel_wait_ex, True)
+
     def close(self):
         if self._closed:
             return
@@ -75,15 +106,7 @@ class GreenFileDescriptorIO(RawIOBase):
         # TODO: Can we use 'read_event is not None and write_event is
         # not None' to mean _closed?
         self._closed = True
-        read_event = self._read_event
-        write_event = self._write_event
-        self._read_event = self._write_event = None
-
-        if read_event is not None:
-            self.hub.cancel_wait(read_event, cancel_wait_ex, True)
-        if write_event is not None:
-            self.hub.cancel_wait(write_event, cancel_wait_ex, True)
-
+        self.__destroy_events()
         fileno = self._fileno
         if self._closefd:
             self._fileno = None
@@ -140,7 +163,17 @@ class GreenFileDescriptorIO(RawIOBase):
             self.hub.wait(self._write_event)
 
     def seek(self, offset, whence=0):
-        return os.lseek(self._fileno, offset, whence)
+        try:
+            return os.lseek(self._fileno, offset, whence)
+        except IOError: # pylint:disable=try-except-raise
+            raise
+        except OSError as ex: # pylint:disable=duplicate-except
+            # Python 2.x
+            # make sure on Python 2.x we raise an IOError
+            # as documented for RawIOBase.
+            # See https://github.com/gevent/gevent/issues/1323
+            reraise(IOError, IOError(*ex.args), sys.exc_info()[2])
+
 
 class FlushingBufferedWriter(BufferedWriter):
 
@@ -148,6 +181,7 @@ class FlushingBufferedWriter(BufferedWriter):
         ret = BufferedWriter.write(self, b)
         self.flush()
         return ret
+
 
 class FileObjectPosix(FileObjectBase):
     """
@@ -282,10 +316,6 @@ class FileObjectPosix(FileObjectBase):
             # that code was never tested and was explicitly marked as "not used"
             raise ValueError('mode can only be [rb, rU, wb], not %r' % (orig_mode,))
 
-        self._fobj = fobj
-
-        # This attribute is documented as available for non-blocking reads.
-        self.fileio = GreenFileDescriptorIO(fileno, mode, closefd=close)
 
         self._orig_bufsize = bufsize
         if bufsize < 0 or bufsize == 1:
@@ -304,7 +334,14 @@ class FileObjectPosix(FileObjectBase):
                 # attribute.
                 IOFamily = FlushingBufferedWriter
 
-        super(FileObjectPosix, self).__init__(IOFamily(self.fileio, bufsize), close)
+
+        self._fobj = fobj
+        # This attribute is documented as available for non-blocking reads.
+        self.fileio = GreenFileDescriptorIO(fileno, mode, closefd=close)
+
+        buffered_fobj = IOFamily(self.fileio, bufsize)
+
+        super(FileObjectPosix, self).__init__(buffered_fobj, close)
 
     def _do_close(self, fobj, closefd):
         try:

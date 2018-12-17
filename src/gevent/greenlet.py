@@ -302,11 +302,16 @@ class Greenlet(greenlet):
         """
         The greenlet name. By default, a unique name is constructed using
         the :attr:`minimal_ident`. You can assign a string to this
-        value to change it. It is shown in the `repr` of this object.
+        value to change it. It is shown in the `repr` of this object if it
+        has been assigned to or if the `minimal_ident` has already been generated.
 
         .. versionadded:: 1.3a2
+        .. versionchanged:: 1.4
+           Stop showing generated names in the `repr` when the ``minimal_ident``
+           hasn't been requested. This reduces overhead and may be less confusing,
+           since ``minimal_ident`` can get reused.
         """
-        return 'Greenlet-%d' % (self.minimal_ident)
+        return 'Greenlet-%d' % (self.minimal_ident,)
 
     def _raise_exception(self):
         reraise(*self.exc_info)
@@ -426,7 +431,14 @@ class Greenlet(greenlet):
 
     def __repr__(self):
         classname = self.__class__.__name__
-        result = '<%s "%s" at %s' % (classname, self.name, hex(id(self)))
+        # If no name has been assigned, don't generate one, including a minimal_ident,
+        # if not necessary. This reduces the use of weak references and associated
+        # overhead.
+        if 'name' not in self.__dict__ and self._ident is None:
+            name = ' '
+        else:
+            name = ' "%s" ' % (self.name,)
+        result = '<%s%sat %s' % (classname, name, hex(id(self)))
         formatted = self._formatinfo()
         if formatted:
             result += ': ' + formatted
@@ -508,6 +520,7 @@ class Greenlet(greenlet):
     def start(self):
         """Schedule the greenlet to run in this loop iteration"""
         if self._start_event is None:
+            _call_spawn_callbacks(self)
             self._start_event = self.parent.loop.run_callback(self.switch)
 
     def start_later(self, seconds):
@@ -518,8 +531,45 @@ class Greenlet(greenlet):
         *seconds* later
         """
         if self._start_event is None:
+            _call_spawn_callbacks(self)
             self._start_event = self.parent.loop.timer(seconds)
             self._start_event.start(self.switch)
+
+    @staticmethod
+    def add_spawn_callback(callback):
+        """
+        add_spawn_callback(callback) -> None
+
+        Set up a *callback* to be invoked when :class:`Greenlet` objects
+        are started.
+
+        The invocation order of spawn callbacks is unspecified.  Adding the
+        same callback more than one time will not cause it to be called more
+        than once.
+
+        .. versionadded:: 1.4.0
+        """
+        global _spawn_callbacks
+        if _spawn_callbacks is None:  # pylint:disable=used-before-assignment
+            _spawn_callbacks = set()
+        _spawn_callbacks.add(callback)
+
+    @staticmethod
+    def remove_spawn_callback(callback):
+        """
+        remove_spawn_callback(callback) -> None
+
+        Remove *callback* function added with :meth:`Greenlet.add_spawn_callback`.
+        This function will not fail if *callback* has been already removed or
+        if *callback* was never added.
+
+        .. versionadded:: 1.4.0
+        """
+        global _spawn_callbacks
+        if _spawn_callbacks is not None:
+            _spawn_callbacks.discard(callback)
+            if not _spawn_callbacks:
+                _spawn_callbacks = None
 
     @classmethod
     def spawn(cls, *args, **kwargs):
@@ -889,6 +939,15 @@ def _killall(greenlets, exception):
                 g.throw(exception)
             except: # pylint:disable=bare-except
                 g.parent.handle_error(g, *sys_exc_info())
+
+
+def _call_spawn_callbacks(gr):
+    if _spawn_callbacks is not None:
+        for cb in _spawn_callbacks:
+            cb(gr)
+
+
+_spawn_callbacks = None
 
 
 def killall(greenlets, exception=GreenletExit, block=True, timeout=None):

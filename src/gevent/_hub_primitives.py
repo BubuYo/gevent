@@ -107,29 +107,32 @@ class _WaitIterator(object):
         self._timer = None
         self._begun = False
 
-
         # Even if we're only going to return 1 object,
         # we must still rawlink() *all* of them, so that no
         # matter which one finishes first we find it.
         self._count = len(objects) if count is None else min(count, len(objects))
 
+    def _begin(self):
+        if self._begun:
+            return
 
-    def __iter__(self):
-        # When we begin iterating, we begin the timer.
+        self._begun = True
+
         # XXX: If iteration doesn't actually happen, we
         # could leave these links around!
-        if not self._begun:
-            self._begun = True
+        for obj in self._objects:
+            obj.rawlink(self._switch)
 
-            for obj in self._objects:
-                obj.rawlink(self._switch)
+        if self._timeout is not None:
+            self._timer = self._hub.loop.timer(self._timeout, priority=-1)
+            self._timer.start(self._switch, self)
 
-            if self._timeout is not None:
-                self._timer = self._hub.loop.timer(self._timeout, priority=-1)
-                self._timer.start(self._switch, self)
+    def __iter__(self):
         return self
 
     def __next__(self):
+        self._begin()
+
         if self._count == 0:
             # Exhausted
             self._cleanup()
@@ -165,11 +168,25 @@ class _WaitIterator(object):
                 except: # pylint:disable=bare-except
                     traceback.print_exc()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, typ, value, tb):
+        self._cleanup()
+
 
 def iwait_on_objects(objects, timeout=None, count=None):
     """
     Iteratively yield *objects* as they are ready, until all (or *count*) are ready
     or *timeout* expired.
+
+    If you will only be consuming a portion of the *objects*, you should
+    do so inside a ``with`` block on this object to avoid leaking resources::
+
+        with gevent.iwait((a, b, c)) as it:
+            for i in it:
+                if i is a:
+                    break
 
     :param objects: A sequence (supporting :func:`len`) containing objects
         implementing the wait protocol (rawlink() and unlink()).
@@ -187,6 +204,8 @@ def iwait_on_objects(objects, timeout=None, count=None):
     .. versionchanged:: 1.1a2
        No longer raise :exc:`LoopExit` if our caller switches greenlets
        in between items yielded by this function.
+    .. versionchanged:: 1.4
+       Add support to use the returned object as a context manager.
     """
     # QQQ would be nice to support iterable here that can be generated slowly (why?)
     hub = get_hub()
@@ -263,6 +282,10 @@ def _primitive_wait(watcher, timeout, timeout_exc, hub):
 
 # Suitable to be bound as an instance method
 def wait_on_socket(socket, watcher, timeout_exc=None):
+    if socket is None or watcher is None:
+        # test__hub TestCloseSocketWhilePolling, on Python 2; Python 3
+        # catches the EBADF differently.
+        raise ConcurrentObjectUseError("The socket has already been closed by another greenlet")
     _primitive_wait(watcher, socket.timeout,
                     timeout_exc if timeout_exc is not None else _NONE,
                     socket.hub)

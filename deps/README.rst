@@ -12,9 +12,13 @@
 Updating libuv
 ==============
 
-- Clean up the libuv tree:
-  - rm -rf libuv/.github
-  - rm -rf libuv/docs
-  - rm -rf libuv/samples
-  - rm -rf libuv/test
-  - rm -rf libuv/tools
+- Clean up the libuv tree, and apply the patches to libuv (this whole
+  sequence is meant to be copied and pasted into the terminal)::
+
+   rm -rf libuv/.github
+   rm -rf libuv/docs
+   rm -rf libuv/samples
+   rm -rf libuv/test
+   rm -rf libuv/tools
+   rm -f libuv/android-configure*
+   git apply libuv-win-binary.patch

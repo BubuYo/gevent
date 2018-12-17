@@ -87,6 +87,11 @@ GREENLET = Extension(name="gevent._greenlet",
                      ],
                      include_dirs=include_dirs)
 
+ABSTRACT_LINKABLE = Extension(name="gevent.__abstract_linkable",
+                              sources=["src/gevent/_abstract_linkable.py"],
+                              depends=['src/gevent/__abstract_linkable.pxd'],
+                              include_dirs=include_dirs)
+
 
 IDENT = Extension(name="gevent.__ident",
                   sources=["src/gevent/_ident.py"],
@@ -143,6 +148,7 @@ _to_cythonize = [
     GREENLET,
     TRACER,
 
+    ABSTRACT_LINKABLE,
     SEMAPHORE,
     LOCAL,
 
@@ -155,6 +161,7 @@ _to_cythonize = [
 EXT_MODULES = [
     CORE,
     ARES,
+    ABSTRACT_LINKABLE,
     SEMAPHORE,
     LOCAL,
     GREENLET,
@@ -193,7 +200,8 @@ greenlet_requires = [
     # We need to watch our greenlet version fairly carefully,
     # since we compile cython code that extends the greenlet object.
     # Binary compatibility would break if the greenlet struct changes.
-    'greenlet >= 0.4.13; platform_python_implementation=="CPython"',
+    # (Which it did in 0.4.14 for Python 3.7)
+    'greenlet >= 0.4.14; platform_python_implementation=="CPython"',
 ]
 
 # Note that we don't add cffi to install_requires, it's
@@ -231,6 +239,7 @@ if PYPY:
     EXT_MODULES.remove(LOCAL)
     EXT_MODULES.remove(GREENLET)
     EXT_MODULES.remove(SEMAPHORE)
+    EXT_MODULES.remove(ABSTRACT_LINKABLE)
 
     # As of PyPy 5.10, this builds, but won't import (missing _Py_ReprEnter)
     EXT_MODULES.remove(CORE)
@@ -242,6 +251,7 @@ if PYPY:
     _to_cythonize.remove(GREENLET)
     _to_cythonize.remove(SEMAPHORE)
     _to_cythonize.remove(IDENT)
+    _to_cythonize.remove(ABSTRACT_LINKABLE)
 
     EXT_MODULES.remove(IMAP)
     _to_cythonize.remove(IMAP)
@@ -363,7 +373,7 @@ def run_setup(ext_modules, run_make):
 
                 # We don't run coverage on Windows, and pypy can't build it there
                 # anyway (coveralls -> cryptopgraphy -> openssl)
-                'coverage>=4.0 ; sys_platform != "win32"',
+                'coverage>=5.0a3 ; sys_platform != "win32"',
                 'coveralls>=1.0 ; sys_platform != "win32"',
 
                 'futures ; python_version == "2.7"',

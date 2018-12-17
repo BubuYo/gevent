@@ -21,13 +21,13 @@ _version_info = namedtuple('version_info',
 #: .. deprecated:: 1.2
 #:  Use ``pkg_resources.parse_version(__version__)`` (or the equivalent
 #:  ``packaging.version.Version(__version__)``).
-version_info = _version_info(1, 3, 0, 'dev', 0)
+version_info = _version_info(1, 4, 0, 'dev', 0)
 
 #: The human-readable PEP 440 version identifier.
 #: Use ``pkg_resources.parse_version(__version__)`` or
 #: ``packaging.version.Version(__version__)`` to get a machine-usable
 #: value.
-__version__ = '1.3.5.dev0'
+__version__ = '1.4.0.dev0'
 
 
 __all__ = [
@@ -159,9 +159,11 @@ del sys
 
 # the following makes hidden imports visible to freezing tools like
 # py2exe. see https://github.com/gevent/gevent/issues/181
+# This is not well maintained or tested, though, so it likely becomes
+# outdated on each major release.
 
-def __dependencies_for_freezing():
-    # pylint:disable=unused-variable
+def __dependencies_for_freezing(): # pragma: no cover
+    # pylint:disable=unused-import
     from gevent import core
     from gevent import resolver_thread
     from gevent import resolver_ares

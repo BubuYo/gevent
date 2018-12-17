@@ -267,9 +267,6 @@ class Input(object):
         if length == 0:
             return b""
 
-        if length is not None and length < 0:
-            length = None
-
         if use_readline:
             reader = self.rfile.readline
         else:
@@ -312,11 +309,15 @@ class Input(object):
         return b''.join(response)
 
     def read(self, length=None):
+        if length is not None and length < 0:
+            length = None
         if self.chunked_input:
             return self._chunked_read(length)
         return self._do_read(length)
 
     def readline(self, size=None):
+        if size is not None and size < 0:
+            size = None
         if self.chunked_input:
             return self._chunked_read(size, True)
         return self._do_read(size, use_readline=True)
@@ -1118,6 +1119,10 @@ class WSGIHandler(object):
         chunked = env.get('HTTP_TRANSFER_ENCODING', '').lower() == 'chunked'
         self.wsgi_input = Input(self.rfile, self.content_length, socket=sock, chunked_input=chunked)
         env['wsgi.input'] = self.wsgi_input
+        # This is a non-standard flag indicating that our input stream is
+        # self-terminated (returns EOF when consumed).
+        # See https://github.com/gevent/gevent/issues/1308
+        env['wsgi.input_terminated'] = True
         return env
 
 
@@ -1183,7 +1188,6 @@ class LoggingLogAdapter(object):
 
     def flush(self):
         "No-op; required to be a file-like object"
-        pass
 
     def writelines(self, lines):
         for line in lines:

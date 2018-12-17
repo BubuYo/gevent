@@ -42,6 +42,8 @@
 #define UV_FS_FREE_PTR           0x0008
 #define UV_FS_CLEANEDUP          0x0010
 
+#define UV__RENAME_RETRIES       4
+#define UV__RENAME_WAIT          250
 
 #define INIT(subtype)                                                         \
   do {                                                                        \
@@ -55,7 +57,11 @@
   do {                                                                        \
     if (cb != NULL) {                                                         \
       uv__req_register(loop, req);                                            \
-      uv__work_submit(loop, &req->work_req, uv__fs_work, uv__fs_done);        \
+      uv__work_submit(loop,                                                   \
+                      &req->work_req,                                         \
+                      UV__WORK_FAST_IO,                                       \
+                      uv__fs_work,                                            \
+                      uv__fs_done);                                           \
       return 0;                                                               \
     } else {                                                                  \
       uv__fs_work(&req->work_req);                                            \
@@ -131,7 +137,14 @@ const WCHAR UNC_PATH_PREFIX_LEN = 8;
 static int uv__file_symlink_usermode_flag = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
 
 void uv_fs_init(void) {
-  _fmode = _O_BINARY;
+/* gevent: This breaks `open()` on CPython 2 by changing
+ * the default mode for file operations. Python 3 and PyPy
+ * ar unaffected. It was removed for the (unreleased) libuv 2.
+ * See https://github.com/gevent/gevent/issues/1282
+ */
+/*
+ * _fmode = _O_BINARY;
+ */
 }
 
 
@@ -1325,12 +1338,78 @@ static void fs__fstat(uv_fs_t* req) {
 
 
 static void fs__rename(uv_fs_t* req) {
-  if (!MoveFileExW(req->file.pathw, req->fs.info.new_pathw, MOVEFILE_REPLACE_EXISTING)) {
+  int tries;
+  int sys_errno;
+  int result;
+  int try_rmdir;
+  WCHAR* src, *dst;
+  DWORD src_attrib, dst_attrib;
+
+  src = req->file.pathw;
+  dst = req->fs.info.new_pathw;
+  try_rmdir = 0;
+
+  /* Do some checks to fail early. */
+  src_attrib = GetFileAttributesW(src);
+  if (src_attrib == INVALID_FILE_ATTRIBUTES) {
     SET_REQ_WIN32_ERROR(req, GetLastError());
     return;
   }
+  dst_attrib = GetFileAttributesW(dst);
+  if (dst_attrib != INVALID_FILE_ATTRIBUTES) {
+    if (dst_attrib & FILE_ATTRIBUTE_READONLY) {
+      req->result = UV_EPERM;
+      return;
+    }
+    /* Renaming folder to a folder name that already exist will fail on
+     * Windows. We will try to delete target folder first.
+     */
+    if (src_attrib & FILE_ATTRIBUTE_DIRECTORY &&
+        dst_attrib & FILE_ATTRIBUTE_DIRECTORY)
+        try_rmdir = 1;
+  }
 
-  SET_REQ_RESULT(req, 0);
+  /* Sometimes an antivirus or indexing software can lock the target or the
+   * source file/directory. This is annoying for users, in such cases we will
+   * retry couple of times with some delay before failing.
+   */
+  for (tries = 0; tries < UV__RENAME_RETRIES; ++tries) {
+    if (tries > 0)
+      Sleep(UV__RENAME_WAIT);
+
+    if (try_rmdir) {
+      result = _wrmdir(dst) == 0 ? 0 : uv_translate_sys_error(_doserrno);
+      switch (result)
+      {
+      case 0:
+      case UV_ENOENT:
+        /* Folder removed or did not exist at all. */
+        try_rmdir = 0;
+        break;
+      case UV_ENOTEMPTY:
+        /* Non-empty target folder, fail instantly. */
+        SET_REQ_RESULT(req, -1);
+        return;
+      default:
+        /* All other errors - try to move file anyway and handle the error
+         * there, retrying folder deletion next time around.
+         */
+        break;
+      }
+    }
+
+    if (MoveFileExW(src, dst, MOVEFILE_REPLACE_EXISTING) != 0) {
+      SET_REQ_RESULT(req, 0);
+      return;
+    }
+
+    sys_errno = GetLastError();
+    result = uv_translate_sys_error(sys_errno);
+    if (result != UV_EBUSY && result != UV_EPERM && result != UV_EACCES)
+      break;
+  }
+  req->sys_errno_ = sys_errno;
+  req->result = result;
 }
 
 
@@ -1513,10 +1592,10 @@ static void fs__fchmod(uv_fs_t* req) {
     SET_REQ_WIN32_ERROR(req, pRtlNtStatusToDosError(nt_status));
     goto fchmod_cleanup;
   }
- 
+
   /* Test if the Archive attribute is cleared */
   if ((file_info.FileAttributes & FILE_ATTRIBUTE_ARCHIVE) == 0) {
-      /* Set Archive flag, otherwise setting or clearing the read-only 
+      /* Set Archive flag, otherwise setting or clearing the read-only
          flag will not work */
       file_info.FileAttributes |= FILE_ATTRIBUTE_ARCHIVE;
       nt_status = pNtSetInformationFile(handle,

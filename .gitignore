@@ -19,19 +19,25 @@ src/gevent/_tracer.c
 src/gevent/queue.c
 src/gevent/_hub_primitives.c
 src/gevent/_greenlet_primitives.c
+src/gevent/_abstract_linkable.c
 src/gevent/libev/corecext.c
 src/gevent/libev/corecext.h
 src/gevent/libev/_corecffi.c
 src/gevent/libev/_corecffi.o
 src/gevent/resolver/cares.c
 
+# Cython annotations
+src/gevent/*.html
+src/gevent/libev/*.html
+src/gevent/resolver/*.html
+
 Makefile.ext
 MANIFEST
 *_flymake.py
 
-src/greentest/.coverage\.*
-src/greentest/htmlcov
-src/greentest/.coverage
+.coverage\.*
+htmlcov/
+.coverage
 
 doc/_build
 doc/__pycache__
